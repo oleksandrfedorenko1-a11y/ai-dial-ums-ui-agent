@@ -26,7 +26,7 @@ services:
     ports:
       - "8005:8005"
     environment:
-      - USERS_MANAGEMENT_SERVICE_URL=${USERS_MANAGEMENT_SERVICE_URL:-http://host.docker.internal:8041}
+      - USERS_MANAGEMENT_SERVICE_URL=${USERS_MANAGEMENT_SERVICE_URL:-http://userservice:8000}
     volumes:
       - ./data:/app/data
     restart: unless-stopped
