@@ -4,6 +4,8 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import anyio
+
 import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -71,10 +73,11 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup complete")
     yield
 
-    await ums_mcp.close()
-    await fetch_mcp.close()
-    await duckduckgo_mcp.close()
-    await redis_client.aclose()
+    with anyio.CancelScope(shield=True):
+        await ums_mcp.close()
+        await fetch_mcp.close()
+        await duckduckgo_mcp.close()
+        await redis_client.aclose()
 
 
 app = FastAPI(lifespan=lifespan)
