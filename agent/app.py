@@ -71,6 +71,11 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup complete")
     yield
 
+    await ums_mcp.close()
+    await fetch_mcp.close()
+    await duckduckgo_mcp.close()
+    await redis_client.aclose()
+
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(

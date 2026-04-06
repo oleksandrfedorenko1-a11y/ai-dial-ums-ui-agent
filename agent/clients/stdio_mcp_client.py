@@ -1,4 +1,5 @@
 import logging
+from contextlib import AsyncExitStack
 from typing import Optional, Any
 
 from mcp import ClientSession
@@ -14,8 +15,7 @@ class StdioMCPClient:
     def __init__(self, docker_image: str) -> None:
         self.docker_image = docker_image
         self.session: Optional[ClientSession] = None
-        self._stdio_context = None
-        self._session_context = None
+        self._exit_stack = AsyncExitStack()
         logger.debug("StdioMCPClient instance created", extra={"docker_image": docker_image})
 
     @classmethod
@@ -31,12 +31,18 @@ class StdioMCPClient:
             command="docker",
             args=["run", "--rm", "-i", self.docker_image]
         )
-        self._stdio_context = stdio_client(server_params)
-        read_stream, write_stream = await self._stdio_context.__aenter__()
-        self._session_context = ClientSession(read_stream, write_stream)
-        self.session: ClientSession = await self._session_context.__aenter__()
+        read_stream, write_stream = await self._exit_stack.enter_async_context(
+            stdio_client(server_params)
+        )
+        self.session = await self._exit_stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
         init_result = await self.session.initialize()
         logger.info(f"MCP stdio server initialized: {init_result}")
+
+    async def close(self):
+        """Close MCP connection"""
+        await self._exit_stack.aclose()
 
     async def get_tools(self) -> list[dict[str, Any]]:
         """Get available tools from MCP server"""

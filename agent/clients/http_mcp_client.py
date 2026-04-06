@@ -1,4 +1,5 @@
 import logging
+from contextlib import AsyncExitStack
 from typing import Optional, Any
 
 from mcp import ClientSession
@@ -14,8 +15,7 @@ class HttpMCPClient:
     def __init__(self, mcp_server_url: str) -> None:
         self.server_url = mcp_server_url
         self.session: Optional[ClientSession] = None
-        self._streams_context = None
-        self._session_context = None
+        self._exit_stack = AsyncExitStack()
         logger.debug("HttpMCPClient instance created", extra={"server_url": mcp_server_url})
 
     @classmethod
@@ -27,12 +27,18 @@ class HttpMCPClient:
 
     async def connect(self):
         """Connect to MCP server"""
-        self._streams_context = streamablehttp_client(self.server_url)
-        read_stream, write_stream, _ = await self._streams_context.__aenter__()
-        self._session_context = ClientSession(read_stream, write_stream)
-        self.session: ClientSession = await self._session_context.__aenter__()
+        read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
+            streamablehttp_client(self.server_url)
+        )
+        self.session = await self._exit_stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
         init_result = await self.session.initialize()
         logger.info(f"MCP HTTP server initialized: {init_result}")
+
+    async def close(self):
+        """Close MCP connection"""
+        await self._exit_stack.aclose()
 
     async def get_tools(self) -> list[dict[str, Any]]:
         """Get available tools from MCP server"""
