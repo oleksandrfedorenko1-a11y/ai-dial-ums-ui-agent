@@ -1,10 +1,9 @@
+import asyncio
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Optional
-
-import anyio
 
 import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException
@@ -41,18 +40,19 @@ async def lifespan(app: FastAPI):
 
     tools: list[dict] = []
     tool_name_client_map: dict[str, HttpMCPClient | StdioMCPClient] = {}
+    stop_event = asyncio.Event()
 
-    ums_mcp = await HttpMCPClient.create("http://localhost:8005/mcp")
+    ums_mcp = await HttpMCPClient.create("http://localhost:8005/mcp", stop_event)
     for tool in await ums_mcp.get_tools():
         tools.append(tool)
         tool_name_client_map[tool["function"]["name"]] = ums_mcp
 
-    fetch_mcp = await HttpMCPClient.create("https://remote.mcpservers.org/fetch/mcp")
+    fetch_mcp = await HttpMCPClient.create("https://remote.mcpservers.org/fetch/mcp", stop_event)
     for tool in await fetch_mcp.get_tools():
         tools.append(tool)
         tool_name_client_map[tool["function"]["name"]] = fetch_mcp
 
-    duckduckgo_mcp = await StdioMCPClient.create("mcp/duckduckgo:latest")
+    duckduckgo_mcp = await StdioMCPClient.create("mcp/duckduckgo:latest", stop_event)
     for tool in await duckduckgo_mcp.get_tools():
         tools.append(tool)
         tool_name_client_map[tool["function"]["name"]] = duckduckgo_mcp
@@ -73,11 +73,12 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup complete")
     yield
 
-    with anyio.CancelScope(shield=True):
-        await ums_mcp.close()
-        await fetch_mcp.close()
-        await duckduckgo_mcp.close()
-        await redis_client.aclose()
+    stop_event.set()
+    await asyncio.gather(
+        ums_mcp._task, fetch_mcp._task, duckduckgo_mcp._task,
+        return_exceptions=True,
+    )
+    await redis_client.close()
 
 
 app = FastAPI(lifespan=lifespan)

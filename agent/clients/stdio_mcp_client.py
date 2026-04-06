@@ -1,5 +1,5 @@
+import asyncio
 import logging
-from contextlib import AsyncExitStack
 from typing import Optional, Any
 
 from mcp import ClientSession
@@ -15,34 +15,32 @@ class StdioMCPClient:
     def __init__(self, docker_image: str) -> None:
         self.docker_image = docker_image
         self.session: Optional[ClientSession] = None
-        self._exit_stack = AsyncExitStack()
+        self._task: Optional[asyncio.Task] = None
         logger.debug("StdioMCPClient instance created", extra={"docker_image": docker_image})
 
     @classmethod
-    async def create(cls, docker_image: str) -> 'StdioMCPClient':
-        """Async factory method to create and connect MCPClient"""
+    async def create(cls, docker_image: str, stop_event: asyncio.Event) -> 'StdioMCPClient':
+        """Async factory method: starts a background task that owns the MCP connection lifetime"""
         instance = cls(docker_image)
-        await instance.connect()
+        ready = asyncio.Event()
+        instance._task = asyncio.create_task(instance._run(ready, stop_event))
+        await ready.wait()
         return instance
 
-    async def connect(self):
-        """Connect to MCP server via Docker"""
+    async def _run(self, ready: asyncio.Event, stop: asyncio.Event) -> None:
+        """Background task: owns the context managers for the full lifetime"""
         server_params = StdioServerParameters(
             command="docker",
             args=["run", "--rm", "-i", self.docker_image]
         )
-        read_stream, write_stream = await self._exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
-        self.session = await self._exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-        init_result = await self.session.initialize()
-        logger.info(f"MCP stdio server initialized: {init_result}")
-
-    async def close(self):
-        """Close MCP connection"""
-        await self._exit_stack.aclose()
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                init_result = await session.initialize()
+                logger.info(f"MCP stdio server initialized: {init_result}")
+                self.session = session
+                ready.set()
+                await stop.wait()
+        self.session = None
 
     async def get_tools(self) -> list[dict[str, Any]]:
         """Get available tools from MCP server"""

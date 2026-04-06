@@ -1,5 +1,5 @@
+import asyncio
 import logging
-from contextlib import AsyncExitStack
 from typing import Optional, Any
 
 from mcp import ClientSession
@@ -15,30 +15,28 @@ class HttpMCPClient:
     def __init__(self, mcp_server_url: str) -> None:
         self.server_url = mcp_server_url
         self.session: Optional[ClientSession] = None
-        self._exit_stack = AsyncExitStack()
+        self._task: Optional[asyncio.Task] = None
         logger.debug("HttpMCPClient instance created", extra={"server_url": mcp_server_url})
 
     @classmethod
-    async def create(cls, mcp_server_url: str) -> 'HttpMCPClient':
-        """Async factory method to create and connect MCPClient"""
+    async def create(cls, mcp_server_url: str, stop_event: asyncio.Event) -> 'HttpMCPClient':
+        """Async factory method: starts a background task that owns the MCP connection lifetime"""
         instance = cls(mcp_server_url)
-        await instance.connect()
+        ready = asyncio.Event()
+        instance._task = asyncio.create_task(instance._run(ready, stop_event))
+        await ready.wait()
         return instance
 
-    async def connect(self):
-        """Connect to MCP server"""
-        read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
-            streamablehttp_client(self.server_url)
-        )
-        self.session = await self._exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-        init_result = await self.session.initialize()
-        logger.info(f"MCP HTTP server initialized: {init_result}")
-
-    async def close(self):
-        """Close MCP connection"""
-        await self._exit_stack.aclose()
+    async def _run(self, ready: asyncio.Event, stop: asyncio.Event) -> None:
+        """Background task: owns the context managers for the full lifetime"""
+        async with streamablehttp_client(self.server_url) as (read_stream, write_stream, _):
+            async with ClientSession(read_stream, write_stream) as session:
+                init_result = await session.initialize()
+                logger.info(f"MCP HTTP server initialized: {init_result}")
+                self.session = session
+                ready.set()
+                await stop.wait()
+        self.session = None
 
     async def get_tools(self) -> list[dict[str, Any]]:
         """Get available tools from MCP server"""
